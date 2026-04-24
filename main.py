@@ -1,3 +1,5 @@
+send("測試")
+
 import requests, time, random, json, os
 from datetime import datetime, timedelta
 
@@ -34,19 +36,18 @@ DB=load()
 # ===== 工具 =====
 def send(msg):
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                      data={"chat_id":CHAT_ID,"text":msg})
-    except: pass
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": str(msg)[:4000]
+        }
+        r = requests.post(url, data=payload, timeout=10)
 
-def GET(url,p=None):
-    for _ in range(2):
-        try:
-            r=requests.get(url,params=p,headers=HEADERS,timeout=10)
-            if r.status_code==200:
-                return r.json()
-        except:
-            time.sleep(1)
-    return None
+        if r.status_code != 200:
+            print("TG錯誤:", r.text)
+
+    except Exception as e:
+        print("發送失敗:", e)
 
 # ===== 盤口資料 =====
 hist={}       # 上次盤
