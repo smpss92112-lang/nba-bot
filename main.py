@@ -1,174 +1,197 @@
 import requests
 import time
+import json
 from datetime import datetime, timedelta
 
 BOT_TOKEN = "8684077613:AAGURQBszMtiOS4RdE3uDW9g504SIpZb8fs"
 CHAT_ID = "957739057"
 ODDS_API_KEY = "3de238c08f870f50cf7e0afa980c6c8b"
 
-history = {}
-movement_log = {}
+STATS_FILE = "stats.json"
+
+# ===== 載入 =====
+def load_stats():
+    try:
+        with open(STATS_FILE,"r") as f:
+            return json.load(f)
+    except:
+        return {
+            "weekly":{"win":0,"lose":0,"unit":0},
+            "monthly":{"win":0,"lose":0,"unit":0},
+            "history":[]
+        }
+
+def save_stats():
+    with open(STATS_FILE,"w") as f:
+        json.dump(stats,f)
+
+stats = load_stats()
 picks = []
 
-weekly_profit = 0
-monthly_profit = 0
-
-current_week = datetime.now().isocalendar()[1]
-current_month = datetime.now().month
-
 TEAM_MAP = {
-    "Los Angeles Lakers": "湖人",
-    "Houston Rockets": "火箭",
-    "San Antonio Spurs": "馬刺",
-    "Portland Trail Blazers": "拓荒者",
-    "Detroit Pistons": "活塞",
-    "Orlando Magic": "魔術",
-    "Oklahoma City Thunder": "雷霆",
-    "Phoenix Suns": "太陽"
+    "Los Angeles Lakers":"湖人","Houston Rockets":"火箭",
+    "Phoenix Suns":"太陽","Oklahoma City Thunder":"雷霆"
 }
 
-def normalize(name):
-    return TEAM_MAP.get(name, name)
+def normalize(n):
+    return TEAM_MAP.get(n,n)
 
 def send(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                  data={"chat_id":CHAT_ID,"text":msg})
+
+# ===== AI判斷市場狀態 =====
+def ai_market_state():
+    hist = stats["history"][-3:]
+
+    if len(hist) < 3:
+        return "normal"
+
+    total_win = sum(1 for x in hist if x > 0)
+    total_loss = sum(1 for x in hist if x < 0)
+
+    if total_win >= 2:
+        return "good"
+    elif total_loss >= 2:
+        return "bad"
+    return "normal"
 
 # ===== 抓盤 =====
-def fetch_odds():
-    url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds/"
-    params = {"apiKey": ODDS_API_KEY, "regions": "us", "markets": "totals"}
+def fetch():
+    url="https://api.the-odds-api.com/v4/sports/basketball_nba/odds/"
+    params={"apiKey":ODDS_API_KEY,"regions":"us","markets":"totals"}
+    data=requests.get(url,params=params).json()
 
-    data = requests.get(url, params=params).json()
-    tomorrow = (datetime.utcnow() + timedelta(days=1)).date()
-
-    games = []
+    tomorrow=(datetime.utcnow()+timedelta(days=1)).date()
+    games=[]
 
     for g in data:
-        game_date = datetime.fromisoformat(g["commence_time"].replace("Z","+00:00")).date()
-        if game_date != tomorrow:
+        d=datetime.fromisoformat(g["commence_time"].replace("Z","+00:00")).date()
+        if d!=tomorrow:
             continue
 
-        home = normalize(g["home_team"])
-        away = normalize(g["away_team"])
-
-        total = None
-
+        total=None
         for b in g["bookmakers"]:
             for m in b["markets"]:
-                if m["key"] == "totals":
-                    total = m["outcomes"][0]["point"]
+                if m["key"]=="totals":
+                    total=m["outcomes"][0]["point"]
 
         if total:
             games.append({
-                "match": f"{away} vs {home}",
-                "total": total
+                "match":f"{normalize(g['away_team'])} vs {normalize(g['home_team'])}",
+                "total":total
             })
-
     return games
 
-# ===== 模型 =====
-def model(game):
-    if game["total"] >= 226:
-        return "大分", 1.5
-    elif game["total"] <= 210:
-        return "小分", 1.5
+# ===== AI評分 =====
+def evaluate(g, mode):
+    score = 0
+
+    # ===== 動態條件 =====
+    if mode == "bad":
+        if g["total"]>=230 or g["total"]<=210:
+            score += 2
+        else:
+            return None
     else:
-        return "觀望", 0
+        if g["total"]>=228 or g["total"]<=212:
+            score += 2
+        else:
+            return None
+
+    pick = "大分" if g["total"]>=228 else "小分"
+
+    return {
+        "match":g["match"],
+        "pick":pick,
+        "line":g["total"],
+        "score":score
+    }
+
+# ===== AI選場 =====
+def select(games, mode):
+    res=[]
+
+    for g in games:
+        r=evaluate(g,mode)
+        if r:
+            res.append(r)
+
+    res.sort(key=lambda x:x["score"],reverse=True)
+
+    if mode=="good":
+        return res[:3]
+    elif mode=="normal":
+        return res[:2]
+    else:
+        return res[:1]
 
 # ===== 分析 =====
 def analyze():
     global picks
 
-    games = fetch_odds()
-    picks = []
+    mode = ai_market_state()
+    games = fetch()
+    picks = select(games,mode)
 
-    msg = "📊 明日下注\n\n"
+    msg="📊 AI判斷推薦\n\n"
+    msg+=f"市場狀態:{mode}\n\n"
 
-    for g in games:
-        direction, unit = model(g)
-
-        if unit > 0:
-            picks.append({
-                "match": g["match"],
-                "line": g["total"],
-                "pick": direction,
-                "unit": unit
-            })
-
-        msg += f"{g['match']}\n"
-        msg += f"{direction} ({g['total']}) {unit}U\n\n"
+    for p in picks:
+        p["unit"]=1.5
+        msg+=f"{p['match']}\n{p['pick']} ({p['line']}) 1.5U\n\n"
 
     send(msg)
-
-# ===== 抓比分 =====
-def fetch_results():
-    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
-    data = requests.get(url).json()
-
-    results = {}
-
-    for e in data["events"]:
-        t = e["competitions"][0]["competitors"]
-
-        home = normalize(t[0]["team"]["displayName"])
-        away = normalize(t[1]["team"]["displayName"])
-
-        total_score = int(t[0]["score"]) + int(t[1]["score"])
-
-        results[f"{away} vs {home}"] = total_score
-
-    return results
 
 # ===== 結算 =====
 def settle():
-    global weekly_profit, monthly_profit
+    data=requests.get("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard").json()
 
-    results = fetch_results()
+    results={}
+    for e in data["events"]:
+        t=e["competitions"][0]["competitors"]
+        home=normalize(t[0]["team"]["displayName"])
+        away=normalize(t[1]["team"]["displayName"])
+        total=int(t[0]["score"])+int(t[1]["score"])
+        results[f"{away} vs {home}"]=total
 
-    msg = "📊 今日結算\n\n"
+    unit_sum=0
 
     for p in picks:
-        match = p["match"]
-
-        if match not in results:
+        if p["match"] not in results:
             continue
 
-        score = results[match]
+        score=results[p["match"]]
+        win=(p["pick"]=="大分" and score>p["line"]) or (p["pick"]=="小分" and score<p["line"])
 
-        if p["pick"] == "大分":
-            win = score > p["line"]
-        else:
-            win = score < p["line"]
+        unit_sum += 1.5 if win else -1.5
 
-        result = p["unit"] if win else -p["unit"]
+    stats["history"].append(unit_sum)
+    stats["weekly"]["unit"] += unit_sum
+    stats["monthly"]["unit"] += unit_sum
 
-        weekly_profit += result
-        monthly_profit += result
+    save_stats()
 
-        msg += f"{match}\n"
-        msg += f"{p['pick']} {p['line']}\n"
-        msg += f"比分:{score}\n"
-        msg += f"{'✅贏' if win else '❌輸'} {result}U\n\n"
-
-    msg += f"📈 本週: {round(weekly_profit,2)}U\n"
-    msg += f"📊 本月: {round(monthly_profit,2)}U\n"
+    msg="📊 AI結算\n\n"
+    msg+=f"今日:{unit_sum}U\n"
+    msg+=f"近3日:{stats['history'][-3:]}\n"
+    msg+=f"本週:{round(stats['weekly']['unit'],2)}U\n"
+    msg+=f"本月:{round(stats['monthly']['unit'],2)}U\n"
 
     send(msg)
 
-# ===== 主控 =====
+# ===== 排程 =====
 def run():
-    now = datetime.now().strftime("%H:%M")
+    now=datetime.now().strftime("%H:%M")
 
-    if now == "20:00":
+    if now=="20:00":
         analyze()
 
-    if now == "12:00":
+    if now=="12:00":
         settle()
 
-# ===== 啟動 =====
-if __name__ == "__main__":
-    send("🚀 100%交易系統啟動")
+if __name__=="__main__":
+    send("🚀 AI判斷系統啟動")
 
     while True:
         run()
