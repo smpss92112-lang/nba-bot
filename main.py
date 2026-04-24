@@ -3,9 +3,9 @@ send("測試")
 import requests, time, random, json, os
 from datetime import datetime, timedelta
 
-BOT_TOKEN="你的TOKEN"
-CHAT_ID="你的CHAT_ID"
-API_KEY="你的API_KEY"
+BOT_TOKEN = "8684077613:AAGURQBszMtiOS4RdE3uDW9g504SIpZb8fs"
+CHAT_ID = "957739057"
+API_KEY = "3de238c08f870f50cf7e0afa980c6c8b"
 
 HEADERS={"User-Agent":"Mozilla/5.0"}
 DB_FILE="db.json"
