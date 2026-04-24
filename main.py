@@ -4,35 +4,34 @@ from datetime import datetime, timedelta
 
 BOT_TOKEN = "8684077613:AAGURQBszMtiOS4RdE3uDW9g504SIpZb8fs"
 CHAT_ID = "957739057"
-ODDS_API_KEY = "3de238c08f870f50cf7e0afa980c6c8b"
+API_KEY = "3de238c08f870f50cf7e0afa980c6c8b"
 
-# ===== 全局 =====
-history = {}          # 最新盤
-timeline = {}         # 時間軌跡
-open_line = {}        # 初盤
-game_dates = {}       # 比賽日期
+歷史盤 = {}
+初盤 = {}
+比賽時間 = {}
 
-def send(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+最後回報時間 = None
 
-# ===== 抓全部盤 =====
-def fetch_odds():
+# ===== 發送 =====
+def 發送(msg):
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                  data={"chat_id": CHAT_ID, "text": msg})
+
+# ===== 抓盤 =====
+def 抓盤():
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds/"
-    params = {
-        "apiKey": ODDS_API_KEY,
+    data = requests.get(url, params={
+        "apiKey": API_KEY,
         "regions": "us",
         "markets": "totals"
-    }
+    }).json()
 
-    data = requests.get(url, params=params).json()
     games = []
 
     for g in data:
         match = f"{g['away_team']} vs {g['home_team']}"
-
-        date = datetime.fromisoformat(g["commence_time"].replace("Z","+00:00")).date()
-        game_dates[match] = date
+        time_ = datetime.fromisoformat(g["commence_time"].replace("Z","+00:00"))
+        比賽時間[match] = time_
 
         total = None
         for b in g["bookmakers"]:
@@ -41,86 +40,92 @@ def fetch_odds():
                     total = m["outcomes"][0]["point"]
 
         if total:
-            games.append({
-                "match": match,
-                "total": total
-            })
+            games.append({"match": match, "total": total})
 
     return games
 
-# ===== 判斷是否隔天 =====
-def is_tomorrow(match):
-    if match not in game_dates:
-        return False
-    return game_dates[match] == (datetime.utcnow() + timedelta(days=1)).date()
+# ===== 是否已開賽 =====
+def 已開賽(match):
+    return datetime.utcnow() > 比賽時間.get(match)
 
-# ===== 核心監控 =====
-def monitor():
-    games = fetch_odds()
+# ===== 即時監控 =====
+def 監控():
+    games = 抓盤()
 
     for g in games:
-        match = g["match"]
-        total = g["total"]
-        now = datetime.now().strftime("%H:%M")
+        m = g["match"]
+        t = g["total"]
 
-        # ===== 初盤 =====
-        if match not in open_line:
-            open_line[match] = total
-            history[match] = total
-            timeline[match] = [f"初盤:{total}"]
-
+        if 已開賽(m):
             continue
 
-        prev = history.get(match)
-
-        if prev is not None:
-            diff = abs(total - prev)
-
-            # ===== 變盤 =====
-            if diff >= 1:
-                timeline[match].append(f"{now}:{total}")
-
-                # ===== 只通知隔天 =====
-                if is_tomorrow(match):
-                    msg = f"📊 變盤\n{match}\n"
-                    msg += "\n".join(timeline[match][-5:])  # 最近5筆
-                    send(msg)
-
-        history[match] = total
-
-# ===== 分析（只隔天）=====
-def analyze():
-    msg = "📊 明日完整盤口軌跡\n\n"
-
-    found = False
-
-    for match in timeline:
-        if not is_tomorrow(match):
+        if m not in 初盤:
+            初盤[m] = t
+            歷史盤[m] = t
             continue
 
-        found = True
+        diff = t - 歷史盤[m]
 
-        msg += f"{match}\n"
-        msg += "\n".join(timeline[match]) + "\n\n"
+        if abs(diff) >= 1:
+            發送(f"📊變盤\n{m}\n{歷史盤[m]} → {t}")
 
-    if not found:
-        msg += "無資料"
+        歷史盤[m] = t
 
-    send(msg)
+# ===== 定時回報 =====
+def 定時回報():
+    global 最後回報時間
 
-# ===== 排程 =====
-def run():
-    now = datetime.now().strftime("%H:%M")
+    now = datetime.now()
 
-    # 20:00 發分析（只明天）
-    if now == "20:00":
-        analyze()
+    if 最後回報時間 is None:
+        最後回報時間 = now
+        return
 
-# ===== 啟動 =====
+    hours = (now - 最後回報時間).seconds / 3600
+
+    # 白天2小時
+    if 10 <= now.hour < 22:
+        if hours < 2:
+            return
+    else:
+        # 晚上4小時
+        if hours < 4:
+            return
+
+    games = 抓盤()
+
+    msg = "📊盤口回報\n\n"
+
+    for g in games:
+        m = g["match"]
+        t = g["total"]
+
+        if 已開賽(m):
+            continue
+
+        msg += f"{m}\n"
+        msg += f"初盤:{初盤.get(m,'-')}\n"
+        msg += f"目前:{t}\n\n"
+
+    發送(msg)
+    最後回報時間 = now
+
+# ===== 啟動訊息 =====
+def 啟動():
+    games = 抓盤()
+
+    msg = "🚀 系統啟動\n\n目前監控賽事：\n"
+
+    for g in games:
+        msg += f"{g['match']}（{g['total']}）\n"
+
+    發送(msg)
+
+# ===== 主程式 =====
 if __name__ == "__main__":
-    send("🚀 盤口監控 + 初盤系統啟動")
+    啟動()
 
     while True:
-        monitor()
-        run()
+        監控()
+        定時回報()
         time.sleep(60)
