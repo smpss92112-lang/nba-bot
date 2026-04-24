@@ -9,15 +9,14 @@ ODDS_API_KEY = "3de238c08f870f50cf7e0afa980c6c8b"
 
 STATS_FILE = "stats.json"
 
-# ===== 載入 =====
 def load_stats():
     try:
         with open(STATS_FILE,"r") as f:
             return json.load(f)
     except:
         return {
-            "weekly":{"win":0,"lose":0,"unit":0},
-            "monthly":{"win":0,"lose":0,"unit":0},
+            "weekly":{"unit":0},
+            "monthly":{"unit":0},
             "history":[]
         }
 
@@ -40,20 +39,22 @@ def send(msg):
     requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                   data={"chat_id":CHAT_ID,"text":msg})
 
-# ===== AI判斷市場狀態 =====
-def ai_market_state():
+# ===== AI市場狀態 =====
+def ai_mode():
     hist = stats["history"][-3:]
-
-    if len(hist) < 3:
+    if len(hist)<3:
         return "normal"
 
-    total_win = sum(1 for x in hist if x > 0)
-    total_loss = sum(1 for x in hist if x < 0)
+    win = sum(1 for x in hist if x>0)
+    lose = sum(1 for x in hist if x<0)
 
-    if total_win >= 2:
+    if lose>=2:
+        return "safe"
+    if lose>=3:
+        return "stop"
+    if win>=2:
         return "good"
-    elif total_loss >= 2:
-        return "bad"
+
     return "normal"
 
 # ===== 抓盤 =====
@@ -83,23 +84,21 @@ def fetch():
             })
     return games
 
-# ===== AI評分 =====
-def evaluate(g, mode):
+# ===== 評分 =====
+def evaluate(g):
     score = 0
 
-    # ===== 動態條件 =====
-    if mode == "bad":
-        if g["total"]>=230 or g["total"]<=210:
-            score += 2
-        else:
-            return None
+    if g["total"]>=228:
+        score = 3
+        pick = "大分"
+    elif g["total"]<=212:
+        score = 3
+        pick = "小分"
+    elif g["total"]>=226 or g["total"]<=214:
+        score = 2
+        pick = "大分" if g["total"]>=226 else "小分"
     else:
-        if g["total"]>=228 or g["total"]<=212:
-            score += 2
-        else:
-            return None
-
-    pick = "大分" if g["total"]>=228 else "小分"
+        return None
 
     return {
         "match":g["match"],
@@ -108,38 +107,63 @@ def evaluate(g, mode):
         "score":score
     }
 
-# ===== AI選場 =====
-def select(games, mode):
+# ===== 選場 =====
+def select(games):
     res=[]
-
     for g in games:
-        r=evaluate(g,mode)
+        r=evaluate(g)
         if r:
             res.append(r)
 
     res.sort(key=lambda x:x["score"],reverse=True)
+    return res[:3]
 
-    if mode=="good":
-        return res[:3]
-    elif mode=="normal":
-        return res[:2]
-    else:
-        return res[:1]
+# ===== 💰 資金管理 =====
+def apply_bankroll(picks, mode):
+    final=[]
+    total_risk=0
+    max_risk=3  # 每日上限 3U
+
+    for p in picks:
+        if mode=="stop":
+            continue
+
+        # 基礎單位
+        if p["score"]>=3:
+            unit=1.5
+        else:
+            unit=1
+
+        # 風控縮放
+        if mode=="safe":
+            unit*=0.7
+
+        # 控制總風險
+        if total_risk + unit > max_risk:
+            continue
+
+        p["unit"]=round(unit,2)
+        total_risk+=unit
+        final.append(p)
+
+    return final
 
 # ===== 分析 =====
 def analyze():
     global picks
 
-    mode = ai_market_state()
-    games = fetch()
-    picks = select(games,mode)
+    mode=ai_mode()
+    games=fetch()
+    raw=select(games)
 
-    msg="📊 AI判斷推薦\n\n"
-    msg+=f"市場狀態:{mode}\n\n"
+    picks=apply_bankroll(raw,mode)
+
+    msg="📊 AI資金管理推薦\n\n"
+    msg+=f"模式:{mode}\n\n"
 
     for p in picks:
-        p["unit"]=1.5
-        msg+=f"{p['match']}\n{p['pick']} ({p['line']}) 1.5U\n\n"
+        msg+=f"{p['match']}\n"
+        msg+=f"{p['pick']} ({p['line']}) {p['unit']}U\n\n"
 
     send(msg)
 
@@ -164,16 +188,16 @@ def settle():
         score=results[p["match"]]
         win=(p["pick"]=="大分" and score>p["line"]) or (p["pick"]=="小分" and score<p["line"])
 
-        unit_sum += 1.5 if win else -1.5
+        unit_sum += p["unit"] if win else -p["unit"]
 
     stats["history"].append(unit_sum)
-    stats["weekly"]["unit"] += unit_sum
-    stats["monthly"]["unit"] += unit_sum
+    stats["weekly"]["unit"]+=unit_sum
+    stats["monthly"]["unit"]+=unit_sum
 
     save_stats()
 
-    msg="📊 AI結算\n\n"
-    msg+=f"今日:{unit_sum}U\n"
+    msg="📊 結算\n\n"
+    msg+=f"今日:{round(unit_sum,2)}U\n"
     msg+=f"近3日:{stats['history'][-3:]}\n"
     msg+=f"本週:{round(stats['weekly']['unit'],2)}U\n"
     msg+=f"本月:{round(stats['monthly']['unit'],2)}U\n"
@@ -191,7 +215,7 @@ def run():
         settle()
 
 if __name__=="__main__":
-    send("🚀 AI判斷系統啟動")
+    send("🚀 資金管理系統啟動")
 
     while True:
         run()
