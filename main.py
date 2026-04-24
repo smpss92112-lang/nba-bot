@@ -26,7 +26,10 @@ def zh(x): return TEAM.get(x,x)
 # ===== DB =====
 def load():
     if os.path.exists(DB_FILE):
-        return json.load(open(DB_FILE))
+        try:
+            return json.load(open(DB_FILE))
+        except:
+            return {"bets":[], "profit":0.0, "bias":0.0}
     return {"bets":[], "profit":0.0, "bias":0.0}
 def save(): json.dump(DB, open(DB_FILE,"w"))
 DB=load()
@@ -47,6 +50,17 @@ def send(msg):
     except Exception as e:
         print("發送失敗:", e)
 
+def GET(url, p=None):
+    try:
+        r = requests.get(url, params=p, headers=HEADERS, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+        else:
+            print("GET錯誤:", r.text)
+    except Exception as e:
+        print("GET Exception:", e)
+    return None
+    
 # ===== 盤口資料 =====
 hist={}       # 上次盤
 init={}       # 初盤
