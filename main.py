@@ -8,10 +8,9 @@ API_KEY = "3de238c08f870f50cf7e0afa980c6c8b"
 HEADERS={"User-Agent":"Mozilla/5.0"}
 DB_FILE="track.json"
 
-# 台灣時區
 TW = timezone(timedelta(hours=8))
 
-print("🔥盤口監控（台灣時間版）啟動")
+print("🔥盤口監控（Pinnacle版）啟動")
 
 # ===== 中文隊名 =====
 TEAM={
@@ -63,7 +62,7 @@ def save():
 
 DB=load()
 
-# ===== 核心監控 =====
+# ===== 監控 =====
 def monitor():
     data=GET(
         "https://api.the-odds-api.com/v4/sports/basketball_nba/odds/",
@@ -71,42 +70,43 @@ def monitor():
     )
 
     if not isinstance(data,list):
-        print("API無資料")
         return
 
-    # 台灣時間的「明天」
     tomorrow = (datetime.now(TW) + timedelta(days=1)).date()
 
     for g in data:
         try:
-            # ===== 時區轉換（關鍵）=====
+            # ===== 時區轉換 =====
             utc_time = datetime.fromisoformat(
                 g["commence_time"].replace("Z","")
             ).replace(tzinfo=timezone.utc)
 
             local_time = utc_time.astimezone(TW)
 
-            # 只抓台灣明天
             if local_time.date() != tomorrow:
                 continue
 
             match = f"{zh(g['away_team'])} vs {zh(g['home_team'])}"
 
-            totals=[]
-            spreads=[]
+            total=None
+            spread=None
 
+            # ===== 只抓 Pinnacle =====
             for b in g.get("bookmakers",[]):
+                if b["key"] != "pinnacle":
+                    continue
+
                 for mk in b.get("markets",[]):
                     if mk["key"]=="totals":
-                        totals.append(mk["outcomes"][0]["point"])
+                        total = mk["outcomes"][0]["point"]
                     if mk["key"]=="spreads":
-                        spreads.append(mk["outcomes"][0].get("point",0))
+                        spread = mk["outcomes"][0].get("point",0)
 
-            if len(totals)<2:
+            if total is None:
                 continue
 
-            total = round(sum(totals)/len(totals),1)
-            spread = round(sum(spreads)/len(spreads),1) if spreads else 0
+            total = float(total)
+            spread = float(spread) if spread is not None else 0
 
             now_time = datetime.now(TW).strftime("%H:%M")
 
@@ -116,22 +116,18 @@ def monitor():
                     "初盤":{"total":total,"spread":spread},
                     "紀錄":[f"{now_time} 初盤 大小:{total} 讓分:{spread}"]
                 }
-                send(
-                    f"🟡初盤\n{match}\n大小:{total}\n讓分:{spread}"
-                )
+                send(f"🟡初盤\n{match}\n大小:{total}\n讓分:{spread}")
                 continue
 
             last = DB[match]["紀錄"][-1]
 
-            # 沒變就略過
             if f"大小:{total}" in last and f"讓分:{spread}" in last:
                 continue
 
-            # ===== 記錄變動 =====
             record=f"{now_time} 大小:{total} 讓分:{spread}"
             DB[match]["紀錄"].append(record)
 
-            # ===== 判斷是否重大變動（>=1）=====
+            # ===== 判斷重大變動 =====
             prev = DB[match]["紀錄"][-2]
 
             try:
@@ -148,7 +144,7 @@ def monitor():
     save()
 
 # ===== 啟動 =====
-send("🚀盤口監控啟動（台灣時間）")
+send("🚀盤口監控（Pinnacle）啟動")
 
 while True:
     monitor()
