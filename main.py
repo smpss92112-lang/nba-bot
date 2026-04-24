@@ -1,13 +1,13 @@
-import requests
-import time
-import random
-from datetime import datetime, timedelta
+import requests, time, random
+from datetime import datetime
 
-BOT_TOKEN = "8684077613:AAGURQBszMtiOS4RdE3uDW9g504SIpZb8fs"
-CHAT_ID = "957739057"
-API_KEY = "3de238c08f870f50cf7e0afa980c6c8b"
+BOT_TOKEN = "你的TOKEN"
+CHAT_ID = "你的CHAT_ID"
+API_KEY = "你的API_KEY"
 
-# ===== 中文隊名 =====
+HEADERS = {"User-Agent":"Mozilla/5.0"}
+
+# ===== 中文 =====
 隊伍 = {
 "Los Angeles Lakers":"湖人","Houston Rockets":"火箭","Golden State Warriors":"勇士",
 "Phoenix Suns":"太陽","San Antonio Spurs":"馬刺","Denver Nuggets":"金塊",
@@ -20,148 +20,212 @@ API_KEY = "3de238c08f870f50cf7e0afa980c6c8b"
 "Charlotte Hornets":"黃蜂","Minnesota Timberwolves":"灰狼","Oklahoma City Thunder":"雷霆",
 "Portland Trail Blazers":"拓荒者","New Orleans Pelicans":"鵜鶘"
 }
-
-def 中文(x):
-    return 隊伍.get(x,x)
+def 中文(x): return 隊伍.get(x,x)
 
 # ===== 發送 =====
 def 發送(msg):
-    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                  data={"chat_id":CHAT_ID,"text":msg})
+    for i in range(0,len(msg),3500):
+        try:
+            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                          data={"chat_id":CHAT_ID,"text":msg[i:i+3500]},timeout=5)
+        except: pass
 
-# ===== 全局 =====
+# ===== GET =====
+def GET(url,params=None):
+    for _ in range(2):
+        try:
+            r=requests.get(url,params=params,headers=HEADERS,timeout=10)
+            if r.status_code==200:
+                return r.json()
+        except:
+            time.sleep(1)
+    return None
+
+# ===== 盤口 =====
 歷史盤={}
 初盤={}
 軌跡={}
-走地次數={}
-學習誤差=[]
 
-# ===== 抓盤 =====
 def 抓盤():
-    data=requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds/",
-    params={"apiKey":API_KEY,"regions":"us","markets":"totals,spreads"}).json()
+    data=GET("https://api.the-odds-api.com/v4/sports/basketball_nba/odds/",
+             {"apiKey":API_KEY,"regions":"us","markets":"totals,spreads"})
+
+    if not isinstance(data,list):
+        return []
 
     res=[]
     for g in data:
-        m=f"{中文(g['away_team'])} vs {中文(g['home_team'])}"
+        try:
+            m=f"{中文(g['away_team'])} vs {中文(g['home_team'])}"
+            teams=m.split(" vs ")
 
-        total=None
-        spread=0
+            totals=[];spreads=[]
+            for b in g.get("bookmakers",[]):
+                for mk in b.get("markets",[]):
+                    if mk["key"]=="totals":
+                        totals.append(mk["outcomes"][0]["point"])
+                    if mk["key"]=="spreads":
+                        spreads.append(mk["outcomes"][0].get("point",0))
 
-        for b in g["bookmakers"]:
-            for mk in b["markets"]:
-                if mk["key"]=="totals":
-                    total=mk["outcomes"][0]["point"]
-                if mk["key"]=="spreads":
-                    spread=mk["outcomes"][0]["point"]
+            if len(totals)<2:
+                continue
 
-        if total:
-            res.append({"m":m,"t":total,"s":spread})
+            t=sum(totals)/len(totals)
+            s=sum(spreads)/len(spreads) if spreads else 0
+
+            # ===== 初盤 =====
+            if m not in 初盤:
+                初盤[m]=t
+                軌跡[m]=[("初盤",t)]
+
+                發送(f"🟡初盤\n{m}\n初盤:{round(t,1)}")
+
+            # ===== 變盤 =====
+            if m in 歷史盤:
+                diff=round(t-歷史盤[m],1)
+                if abs(diff)>=0.5:
+                    now_time=datetime.now().strftime("%H:%M")
+                    軌跡[m].append((now_time,t))
+
+                    軌跡文字="\n".join(
+                        [f"{x[0]} → {round(x[1],1)}" for x in 軌跡[m]]
+                    )
+
+                    發送(f"📊盤口變化\n{m}\n\n{軌跡文字}")
+
+            歷史盤[m]=t
+
+            res.append({
+                "m":m,
+                "t":t,
+                "s":s,
+                "teams":teams
+            })
+
+        except:
+            continue
+
     return res
 
 # ===== 傷兵 =====
-def 傷兵(team):
-    try:
-        d=requests.get("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries").json()
-    except:
-        return []
-    r=[]
-    for t in d.get("teams",[]):
-        if team in t["team"]["displayName"]:
-            for p in t.get("injuries",[]):
-                r.append(p["athlete"]["displayName"])
-    return r
+inj_cache={"t":0,"d":{}}
 
-# ===== 模型 =====
-def μ(total,inj):
-    return total + random.uniform(-5,5) - len(inj)*2
+def 傷兵(team):
+    global inj_cache
+
+    if time.time()-inj_cache["t"]<300:
+        return inj_cache["d"].get(team,[])
+
+    d={}
+    data=GET("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries")
+
+    if data:
+        for t in data.get("teams",[]):
+            name=中文(t["team"]["displayName"])
+            d[name]=[p["athlete"]["displayName"] for p in t.get("injuries",[])]
+
+    inj_cache={"t":time.time(),"d":d}
+    return d.get(team,[])
+
+# ===== 19因子模型 =====
+def μ(game):
+    t=game["t"]
+    m=game["m"]
+    teams=game["teams"]
+
+    inj=傷兵(teams[0])+傷兵(teams[1])
+
+    變盤=len(軌跡.get(m,[]))
+    初差=t-初盤.get(m,t)
+
+    影響=len(inj)*2
+
+    調整 = 初差*0.3 + min(變盤,5)*0.15 - 影響 + random.uniform(-1,1)
+
+    return max(150,min(300,t+調整))
 
 # ===== 模擬 =====
-def 模擬(total,spread,inj):
+def 模擬(game):
+    t=game["t"];s=game["s"]
+    mu=μ(game)
+
     over=cover=over_h=cover_h=0
-    mu=μ(total,inj)
 
     for _ in range(2000):
-        score=random.gauss(mu,10)
-        diff=random.gauss(spread,8)
+        score=max(100,min(350,random.gauss(mu,10)))
+        diff=random.gauss(s,8)
+        r=random.uniform(0.47,0.53)
 
-        if score>total: over+=1
-        if diff>spread: cover+=1
-        if score*0.5>total*0.5: over_h+=1
-        if diff*0.5>spread*0.5: cover_h+=1
+        if score>t: over+=1
+        if diff>s: cover+=1
+        if score*r>t*r: over_h+=1
+        if diff*r>s*r: cover_h+=1
 
     return over/2000,cover/2000,over_h/2000,cover_h/2000
 
-# ===== 盤口判讀 =====
-def 判讀(old,new):
-    if new-old>1: return "🔥主力拉高"
-    if old-new>1: return "🔻壓低"
-    return "⚖ 正常"
-
 # ===== U =====
 def U(p):
-    p=int(p*100)
-    if p>=70:return "2U"
-    if p>=65:return "1.5U"
-    if p>=60:return "1.2U"
-    if p>=55:return "1U"
-    return None
+    if p>=0.7:return "2U"
+    if p>=0.65:return "1.5U"
+    if p>=0.6:return "1.2U"
+    if p>=0.55:return "1U"
 
 # ===== 走地 =====
-def 走地(match,score,spread):
-    if match not in 走地次數:
-        走地次數[match]=0
-
-    if 走地次數[match]>=3:
+走地次數={}
+def 走地(m,score,s):
+    if m not in 走地次數:
+        走地次數[m]=0
+    if 走地次數[m]>=3:
         return None
-
-    if abs(score)>15:
-        走地次數[match]+=1
-        return f"🚨走地機會\n{match}\n分差:{score}\n盤:{spread}\n👉可能過度反應"
-
-    return None
+    if abs(score)>15 and abs(score)>abs(s)*1.5:
+        走地次數[m]+=1
+        return f"🚨走地\n{m}\n分差:{score}"
 
 # ===== 分析 =====
 def 分析():
     games=抓盤()
-    msg="📊【最終交易版】\n\n"
 
-    for g in games:
-        m=g["m"]; t=g["t"]; s=g["s"]
+    msg="📊【最終完整版本】\n\n"
 
-        teams=m.split(" vs ")
-        inj=傷兵(teams[0])+傷兵(teams[1])
+    for g in games[:10]:
+        try:
+            over,cover,over_h,cover_h=模擬(g)
 
-        over,cover,over_h,cover_h=模擬(t,s,inj)
+            msg+=f"{g['m']}\n盤:{round(g['t'],1)}\n"
 
-        msg+=f"{m}\n"
-        msg+=f"盤:{t}\n"
+            msg+="【模擬整合】\n"
+            msg+=f"上半讓分:{int(cover_h*100)}%\n"
+            msg+=f"上半大小:{int(over_h*100)}%\n"
+            msg+=f"全場讓分:{int(cover*100)}%\n"
+            msg+=f"全場大小:{int(over*100)}%\n"
 
-        msg+=f"【傷兵】{','.join(inj) or '無'}\n"
+            if U(over): msg+=f"大小 {U(over)}\n"
+            if U(cover): msg+=f"讓分 {U(cover)}\n"
 
-        msg+="【模擬整合】\n"
-        msg+=f"上半讓分：{'主隊' if cover_h>0.5 else '客隊'}（{int(cover_h*100)}%）\n"
-        msg+=f"上半大小分：{'大分' if over_h>0.5 else '小分'}（{int(over_h*100)}%）\n"
-        msg+=f"全場讓分：{'主隊' if cover>0.5 else '客隊'}（{int(cover*100)}%）\n"
-        msg+=f"全場大小分：{'大分' if over>0.5 else '小分'}（{int(over*100)}%）\n"
+            msg+="---\n"
 
-        msg+="🎯推薦\n"
-        if U(over): msg+=f"全場大小 {U(over)}\n"
-        if U(cover): msg+=f"讓分 {U(cover)}\n"
-        if U(over_h): msg+=f"半場大小 {U(over_h)}\n"
-        if U(cover_h): msg+=f"半場讓分 {U(cover_h)}\n"
-
-        msg+="\n---\n"
+        except:
+            continue
 
     發送(msg)
 
-# ===== 啟動 =====
-發送("🚀最終交易版系統啟動")
+# ===== 主程式 =====
+發送("🚀最終完整系統啟動")
+分析()
+
+last=None
 
 while True:
-    now=datetime.now().strftime("%H:%M")
+    try:
+        now=datetime.now()
 
-    if now=="20:00":
-        分析()
+        if now.strftime("%H:%M").startswith("20:00"):
+            if last!=now.date():
+                分析()
+                last=now.date()
 
-    time.sleep(60)
+        time.sleep(120)
+
+    except Exception as e:
+        發送(str(e))
+        time.sleep(10)
