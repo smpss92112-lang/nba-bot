@@ -1,75 +1,94 @@
-import requests, time, random, json, os
+import requests,time,random,json,os
 from datetime import datetime
 
-BOT_TOKEN = "你的TOKEN"
-CHAT_ID = "你的CHAT_ID"
-API_KEY = "你的API_KEY"
+BOT_TOKEN="你的TOKEN"
+CHAT_ID="你的CHAT_ID"
+API_KEY="你的API_KEY"
 
-HEADERS = {"User-Agent":"Mozilla/5.0"}
+HEADERS={"User-Agent":"Mozilla/5.0"}
 
-# ===== 檔案 =====
-DATA_FILE = "records.json"
+DB_FILE="db.json"
 
-def load():
-    if os.path.exists(DATA_FILE):
-        return json.load(open(DATA_FILE))
-    return {"bets":[], "profit":0}
-
-def save(d):
-    json.dump(d, open(DATA_FILE,"w"))
-
-DB = load()
-
-# ===== 中文 =====
-隊伍 = {...}  # 保持完整30隊
-
+# ===== 中文隊名 =====
+隊伍={
+"Los Angeles Lakers":"湖人","Houston Rockets":"火箭","Golden State Warriors":"勇士",
+"Phoenix Suns":"太陽","San Antonio Spurs":"馬刺","Denver Nuggets":"金塊",
+"Boston Celtics":"塞爾提克","Miami Heat":"熱火","Milwaukee Bucks":"公鹿",
+"Dallas Mavericks":"獨行俠","New York Knicks":"尼克","Philadelphia 76ers":"76人",
+"Chicago Bulls":"公牛","Cleveland Cavaliers":"騎士","Indiana Pacers":"溜馬",
+"Utah Jazz":"爵士","Memphis Grizzlies":"灰熊","Sacramento Kings":"國王",
+"Toronto Raptors":"暴龍","Washington Wizards":"巫師","Orlando Magic":"魔術",
+"Brooklyn Nets":"籃網","Detroit Pistons":"活塞","Atlanta Hawks":"老鷹",
+"Charlotte Hornets":"黃蜂","Minnesota Timberwolves":"灰狼","Oklahoma City Thunder":"雷霆",
+"Portland Trail Blazers":"拓荒者","New Orleans Pelicans":"鵜鶘"
+}
 def 中文(x): return 隊伍.get(x,x)
+
+# ===== DB =====
+def load():
+    if os.path.exists(DB_FILE):
+        return json.load(open(DB_FILE))
+    return {"bets":[],"profit":0,"bias":0}
+
+def save():
+    json.dump(DB,open(DB_FILE,"w"))
+
+DB=load()
 
 # ===== 發送 =====
 def 發送(msg):
-    for i in range(0,len(msg),3500):
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                data={"chat_id":CHAT_ID,"text":msg[i:i+3500]}
-            )
-        except: pass
+    try:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        data={"chat_id":CHAT_ID,"text":msg})
+    except: pass
 
 # ===== GET =====
-def GET(url,params=None):
+def GET(url,p=None):
     for _ in range(2):
         try:
-            r=requests.get(url,params=params,headers=HEADERS,timeout=10)
-            if r.status_code==200:
-                return r.json()
+            r=requests.get(url,params=p,headers=HEADERS,timeout=10)
+            if r.status_code==200:return r.json()
         except: time.sleep(1)
     return None
 
-# ===== 盤口 =====
 歷史盤={}
 初盤={}
 軌跡={}
+走地次數={}
 
-def 判讀盤口(m):
-    if m not in 軌跡 or len(軌跡[m])<2: return ""
+# ===== 判讀 =====
+def 判讀(m):
+    if m not in 軌跡 or len(軌跡[m])<2:return ""
     c=[x[1] for x in 軌跡[m]]
     d=c[-1]-c[0]
-    if d>=1: return "🔥主力進場（大分）"
-    if d<=-1: return "🔻壓低（小分）"
+    if d>=1:return "🔥主力資金（大分）"
+    if d<=-1:return "🔻壓低（小分）"
     if len(c)>=3 and c[1]>c[0] and c[-1]<c[1]:
-        return "⚠ 誘盤"
-    return "⚖ 正常"
+        return "⚠誘盤"
+    return "⚖散戶盤"
 
+# ===== 投注比例 =====
+def 投注比例(m):
+    if m not in 軌跡 or len(軌跡[m])<2:return "50/50"
+    c=[x[1] for x in 軌跡[m]]
+    d=c[-1]-c[0]
+    if d>1:return "大70% / 小30%"
+    if d<-1:return "小70% / 大30%"
+    return "50/50"
+
+# ===== 抓盤（即時監控）=====
 def 抓盤():
     data=GET("https://api.the-odds-api.com/v4/sports/basketball_nba/odds/",
-             {"apiKey":API_KEY,"regions":"us","markets":"totals,spreads"})
-    if not isinstance(data,list): return []
+    {"apiKey":API_KEY,"regions":"us","markets":"totals,spreads"})
 
-    res=[]
+    if not isinstance(data,list):return []
+
+    games=[]
     for g in data:
         try:
-            m=f"{中文(g['away_team'])} vs {中文(g['home_team'])}"
-            teams=m.split(" vs ")
+            away=中文(g['away_team'])
+            home=中文(g['home_team'])
+            m=f"{away} vs {home}"
 
             totals=[];spreads=[]
             for b in g.get("bookmakers",[]):
@@ -79,52 +98,56 @@ def 抓盤():
                     if mk["key"]=="spreads":
                         spreads.append(mk["outcomes"][0].get("point",0))
 
-            if len(totals)<2: continue
+            if len(totals)<2:continue
 
             t=sum(totals)/len(totals)
             s=sum(spreads)/len(spreads) if spreads else 0
 
+            # 初盤
             if m not in 初盤:
                 初盤[m]=t
                 軌跡[m]=[("初盤",t)]
                 發送(f"🟡初盤\n{m}\n{round(t,1)}")
 
+            # 變盤（即時）
             if m in 歷史盤:
-                diff=round(t-歷史盤[m],1)
-                if abs(diff)>=0.5:
+                d=t-歷史盤[m]
+                if abs(d)>=0.5:
                     now=datetime.now().strftime("%H:%M")
                     軌跡[m].append((now,t))
                     log="\n".join([f"{x[0]}→{round(x[1],1)}" for x in 軌跡[m]])
-                    發送(f"📊變盤\n{m}\n{log}\n{判讀盤口(m)}")
+                    發送(f"📊變盤\n{m}\n{log}\n{判讀(m)}")
 
             歷史盤[m]=t
-            res.append({"m":m,"t":t,"s":s,"teams":teams})
+
+            games.append({"m":m,"t":t,"s":s})
         except: continue
-    return res
+
+    return games
 
 # ===== 模型 =====
-def μ(game):
-    t=game["t"]
-    m=game["m"]
-    inj=0
-    變盤=len(軌跡.get(m,[]))
-    初差=t-初盤.get(m,t)
-    return max(150,min(300,t+初差*0.3+min(變盤,5)*0.15-inj*2+random.uniform(-1,1)))
+def μ(g):
+    t=g["t"];m=g["m"]
+    var=len(軌跡.get(m,[]))
+    diff=t-初盤.get(m,t)
+    return max(150,min(300,t+diff*0.3+var*0.1+DB["bias"]))
 
 # ===== 模擬 =====
-def 模擬(game):
-    t=game["t"];s=game["s"]
-    mu=μ(game)
+def 模擬(g):
+    t=g["t"];s=g["s"]
+    mu=μ(g)
 
     o=c=oh=ch=0
     for _ in range(2000):
-        score=max(100,min(350,random.gauss(mu,10)))
+        score=random.gauss(mu,10)
         diff=random.gauss(s,8)
         r=random.uniform(0.47,0.53)
+
         if score>t:o+=1
         if diff>s:c+=1
         if score*r>t*r:oh+=1
         if diff*r>s*r:ch+=1
+
     return o/2000,c/2000,oh/2000,ch/2000
 
 # ===== U =====
@@ -136,66 +159,73 @@ def U(p):
     return 0
 
 # ===== 報表 =====
-def 記錄(market,u,win):
-    DB["bets"].append({
-        "time":str(datetime.now()),
-        "u":u,
-        "win":win
-    })
-    DB["profit"] += u if win else -u
-    save(DB)
-
 def 報表():
-    today=week=month=0
     now=datetime.now()
+    d=w=m=0
 
     for b in DB["bets"]:
-        t=datetime.fromisoformat(b["time"])
-        val=b["u"] if b["win"] else -b["u"]
+        t=datetime.fromisoformat(b["t"])
+        val=b["u"] if b["w"] else -b["u"]
 
-        if t.date()==now.date(): today+=val
-        if (now-t).days<7: week+=val
-        if t.month==now.month: month+=val
+        if t.date()==now.date():d+=val
+        if (now-t).days<7:w+=val
+        if t.month==now.month:m+=val
 
-    發送(f"📊報表\n今日:{today}U\n本週:{week}U\n本月:{month}U")
+    發送(f"📊報表\n今日:{d}U\n本週:{w}U\n本月:{m}U")
 
 # ===== 分析 =====
 def 分析():
     games=抓盤()
-    msg="📊【最終完整版】\n\n"
 
-    for g in games[:5]:
-        over,cover,oh,ch=模擬(g)
+    picks=[]
+    for g in games:
+        o,c,oh,ch=模擬(g)
+        edge=max(o,c)
+        picks.append((edge,g,o,c,oh,ch))
 
-        msg+=f"{g['m']}\n盤:{round(g['t'],1)}\n"
-        msg+="【模擬整合】\n"
-        msg+=f"上半讓分:{int(ch*100)}%\n"
-        msg+=f"上半大小:{int(oh*100)}%\n"
-        msg+=f"全場讓分:{int(cover*100)}%\n"
-        msg+=f"全場大小:{int(over*100)}%\n"
+    picks=sorted(picks,reverse=True)[:3]
 
-        u1=U(over); u2=U(cover)
-        if u1>0: msg+=f"大小 {u1}U\n"
-        if u2>0: msg+=f"讓分 {u2}U\n"
+    msg="📊最終完整版\n\n"
 
-        msg+="---\n"
+    for edge,g,o,c,oh,ch in picks:
+        m=g["m"];t=g["t"]
+        mu=μ(g)
+        u=U(edge)
+
+        軌="\n".join([f"{x[0]}→{round(x[1],1)}" for x in 軌跡.get(m,[])])
+
+        msg+=f"{m}\n盤:{round(t,1)}\n\n"
+        msg+="📊盤口\n"+軌+"\n"+判讀(m)+"\n\n"
+        msg+="📊投注比例\n"+投注比例(m)+"\n\n"
+        msg+=f"μ:{round(mu,1)}\n\n"
+        msg+=f"全讓:{int(c*100)}% 全大:{int(o*100)}%\n"
+        msg+=f"半讓:{int(ch*100)}% 半大:{int(oh*100)}%\n\n"
+
+        if u>0:
+            msg+=f"💰{u}U\n"
+
+        msg+="----------------\n"
 
     發送(msg)
     報表()
 
 # ===== 主程式 =====
 發送("🚀最終完整版啟動")
-分析()
 
 last=None
+
 while True:
     try:
+        抓盤()  # 👉即時監控
+
         now=datetime.now()
         if now.strftime("%H:%M").startswith("20:00"):
             if last!=now.date():
                 分析()
                 last=now.date()
+
         time.sleep(120)
+
     except Exception as e:
         發送(str(e))
         time.sleep(10)
