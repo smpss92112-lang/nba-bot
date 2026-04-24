@@ -17,8 +17,8 @@ def send_telegram(message):
 def main():
     print("🚀 系統啟動")
 
-    # 測試訊息（這段是關鍵）
-    send_telegram("🔥 BOT已成功啟動！")
+    # 測試訊息
+    send_telegram("🔥 BOT成功啟動！")
 
     while True:
         print("執行中...")
