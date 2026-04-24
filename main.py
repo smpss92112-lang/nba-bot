@@ -1,5 +1,3 @@
-send("測試")
-
 import requests, time, random, json, os
 from datetime import datetime, timedelta
 
